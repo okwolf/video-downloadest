@@ -1,0 +1,20 @@
+{
+  "name": "Video Downloadest",
+  "manifest_version": 3,
+  "version": "0.0.0",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "run_at": "document_start",
+      "js": ["content-script.js"],
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    { "resources": ["injected-script.js", "iframe.html"], "matches": ["<all_urls>"] }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "incognito": "split"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "video-downloadest",
+  "version": "0.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "express": "4.21.1",
+    "fs-extra": "11.2.0",
+    "merge-files": "^0.1.2",
+    "mime-types": "2.1.35"
+  }
+}

@@ -1,0 +1,4 @@
+node_modules/
+buffers/
+parts/
+.DS_Store
