@@ -5,6 +5,9 @@ injectedScript.remove();
 
 (async () => {
   const port = await makeExtensionFramePort("/iframe.html");
+  port.onmessage = ({ data }) => {
+    document.dispatchEvent(new CustomEvent("VIDEO_CAPTURE_RESULT", { detail: data }));
+  };
   document.addEventListener("ON_APPEND_BUFFER", ({ detail }) => {
     port.postMessage({ appendBuffer: detail });
   });

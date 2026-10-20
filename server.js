@@ -1,55 +1,72 @@
 import express from "express";
-import fs from "fs-extra";
-import { extension } from "mime-types";
-import mergeFiles from "merge-files";
+import { fileURLToPath } from "node:url";
+import { createCaptureStore } from "./capture-store.js";
 
-const app = express();
-const buffers = {};
-app.post("/buffers/:bufferId/:bufferIndex", (req, res) => {
-  const { bufferId, bufferIndex } = req.params;
-  const { "content-type": bufferType } = req.headers;
-  if (!bufferType) {
-    return res.status(400).end();
-  }
-  if (buffers[bufferId]?.[bufferIndex]) {
-    return res.status(409).end();
-  }
-  const fileName = `buffers/${bufferId}.${extension(bufferType)}`;
-  const partName = `parts/${bufferId}.${bufferIndex}`;
-  buffers[bufferId] = buffers[bufferId] || { fileName, bufferType, parts: [] };
-  buffers[bufferId].parts[bufferIndex] = partName;
-  fs.ensureFileSync(partName);
-  const fd = fs.openSync(partName, "as");
-  req.on("data", (chunk) => {
-    fs.writeSync(fd, chunk);
-  });
-  req.on("end", () => {
-    console.log(`${fileName} [${bufferIndex}]`);
-    fs.closeSync(fd);
-    res.status(202).end();
-  });
-});
-
-app.post("/buffers/:bufferId", async (req, res) => {
-  const { bufferId } = req.params;
-  const buffer = buffers[bufferId];
-  if (!buffer) {
-    return res.status(404).end();
-  }
-
-  try {
-    fs.ensureFileSync(buffer.fileName);
-    await mergeFiles(buffer.parts, buffer.fileName);
-    for (const partName of buffer.parts) {
-      fs.unlinkSync(partName);
+export function createApp(
+  store = createCaptureStore(fileURLToPath(new URL(".", import.meta.url)))
+) {
+  const app = express();
+  app.post(
+    "/captures/:captureId/streams/:streamId/:index",
+    async (req, res, next) => {
+      try {
+        if (!/^\d+$/.test(req.params.index))
+          return res.status(400).json({ error: "Invalid chunk index" });
+        const metadata = req.headers["x-capture-metadata"]
+          ? JSON.parse(decodeURIComponent(req.headers["x-capture-metadata"]))
+          : {};
+        await store.upload(
+          req.params.captureId,
+          req.params.streamId,
+          Number(req.params.index),
+          req.headers["content-type"],
+          req
+        );
+        console.log(
+          `📥 Received ${store.expectedFilename(req.params.captureId, metadata)} [${req.params.index}]`
+        );
+        res.status(201).end();
+      } catch (error) {
+        next(error);
+      }
     }
-    res.status(202).end();
-    console.log(`${buffer.fileName} ✅`);
-  } catch (err) {
-    console.error(`${buffer.fileName} ❌`, err);
-  }
-});
-
-app.listen(3000, () => {
-  console.log("server started...");
-});
+  );
+  app.post(
+    "/captures/:captureId/complete",
+    express.json({ limit: "64kb" }),
+    async (req, res, next) => {
+      try {
+        const file = await store.complete(req.params.captureId, req.body);
+        console.log(`✅ Saved ${file}`);
+        res.json({ file });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+  app.use((error, req, res, next) => {
+    if (
+      req.aborted ||
+      error.code === "ECONNRESET" ||
+      error.code === "ERR_STREAM_PREMATURE_CLOSE"
+    ) {
+      console.warn(
+        `⚠️ Upload interrupted: ${req.params.captureId}/${req.params.streamId} [${req.params.index}]; waiting for retry.`
+      );
+      return;
+    }
+    const context = req.route?.path === "/captures/:captureId/complete"
+      ? `Capture ${req.params.captureId}`
+      : `Upload ${req.params.captureId}/${req.params.streamId} [${req.params.index}]`;
+    console.error(`❌ ${context} failed:`, error.status && error.status < 500 ? error.message : error);
+    res.status(error.status || 500).json({ error: error.message });
+  });
+  return app;
+}
+const entry = process.argv[1];
+const serverPath = fileURLToPath(import.meta.url);
+if (entry === serverPath || (entry && `${entry}.js` === serverPath)) {
+  createApp().listen(3000, "127.0.0.1", () =>
+    console.log("Capture server listening on http://localhost:3000")
+  );
+}
