@@ -18,6 +18,9 @@ async function uploadWithRetry(url, options) {
 function connectUploadPort(port) {
   const queues = new Map();
   const reportedFailures = new Set();
+  const failedUploads = new Set();
+  const queuedLimit = 128 * 1024 * 1024;
+  let queuedBytes = 0;
   port.onmessage = ({ data: message }) => {
     const data = message.appendBuffer ? {
       kind: 'chunk', captureId: message.appendBuffer.captureId,
@@ -27,6 +30,15 @@ function connectUploadPort(port) {
     } : message.bufferEnd ? { ...message.bufferEnd, kind: 'complete' } : message;
     const { captureId } = data;
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(captureId || '')) return;
+    if (failedUploads.has(captureId)) return;
+    const bytes = data.kind === 'chunk' ? data.buffer?.byteLength || 0 : 0;
+    if (queuedBytes + bytes > queuedLimit) {
+      failedUploads.add(captureId);
+      reportedFailures.add(captureId);
+      port.postMessage({ captureId, error: 'The upload queue filled. Reload the page and retry this video.' });
+      return;
+    }
+    queuedBytes += bytes;
     const previous = queues.get(captureId) || Promise.resolve();
     const pending = previous.then(async () => {
       let response;
@@ -41,16 +53,25 @@ function connectUploadPort(port) {
           }, body: data.buffer
         });
       } else if (data.kind === 'complete') {
-        response = await fetch(`http://localhost:3000/captures/${captureId}/complete`, {
+        response = await uploadWithRetry(`http://localhost:3000/captures/${captureId}/complete`, {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ streams: data.streams, metadata: data.metadata })
         });
       } else return;
       if (!response.ok) throw new Error(await response.text());
-      if (data.kind === 'complete') port.postMessage({ captureId, ...await response.json() });
+      if (data.kind === 'complete') {
+        port.postMessage({ captureId, ...await response.json() });
+        reportedFailures.delete(captureId);
+      }
+    }).finally(() => { queuedBytes -= bytes; });
+    const queued = pending.catch(error => {
+      if (data.kind === 'chunk') failedUploads.add(captureId);
+      // Completion may be retried after its retry budget is exhausted, but never
+      // recover a failed chunk queue and accidentally finalize a partial capture.
+      if (failedUploads.has(captureId)) throw error;
     });
-    queues.set(captureId, pending);
-    // Keep the failed promise in the queue: a partial capture must never be finalized.
+    queues.set(captureId, queued);
+    queued.catch(() => {});
     pending.catch(error => {
       if (reportedFailures.has(captureId)) return;
       reportedFailures.add(captureId);
@@ -59,8 +80,20 @@ function connectUploadPort(port) {
   };
 }
 
-window.onmessage = (event) => {
-  if (event.source !== parent || event.data !== new URLSearchParams(location.search).get('secret') || !event.ports[0]) return;
-  window.onmessage = null;
-  connectUploadPort(event.ports[0]);
+let connecting = false;
+window.onmessage = async (event) => {
+  const secret = new URLSearchParams(location.search).get('secret');
+  if (connecting || event.source !== parent || event.data !== secret || !event.ports[0]) return;
+  connecting = true;
+  const key = `upload-port-${secret}`;
+  try {
+    const stored = await chrome.storage.local.get(key);
+    if (!(stored[key] > Date.now())) { connecting = false; return; }
+    await chrome.storage.local.remove(key);
+    window.onmessage = null;
+    connectUploadPort(event.ports[0]);
+    event.ports[0].postMessage({ ready: true });
+  } catch {
+    connecting = false;
+  }
 };

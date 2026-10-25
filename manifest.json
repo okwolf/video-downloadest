@@ -8,16 +8,27 @@
         "<all_urls>"
       ],
       "run_at": "document_start",
+      "world": "MAIN",
+      "js": [
+        "injected-script.js"
+      ],
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "run_at": "document_start",
       "js": [
         "content-script.js"
       ],
-      "all_frames": true
+      "all_frames": true,
+      "world": "ISOLATED"
     }
   ],
   "web_accessible_resources": [
     {
       "resources": [
-        "injected-script.js",
         "iframe.html"
       ],
       "matches": [
@@ -28,5 +39,8 @@
   "incognito": "split",
   "host_permissions": [
     "http://localhost:3000/*"
+  ],
+  "permissions": [
+    "storage"
   ]
 }

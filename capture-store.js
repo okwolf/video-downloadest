@@ -8,11 +8,28 @@ import { spawn } from 'node:child_process';
 
 const validId = /^[a-zA-Z0-9_-]{1,80}$/;
 export function filename(title) {
-  return String(title || 'Untitled video').normalize('NFC')
-    .replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, '_').replace(/^[. ]+|[. ]+$/g, '').slice(0, 120) || 'Untitled video';
+  const sanitized = String(title || 'Untitled video').normalize('NFC')
+    .replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, '_').replace(/^[. ]+|[. ]+$/g, '');
+  let result = '', bytes = 0;
+  // Filesystem component limits count bytes, and the capture ID also needs room.
+  for (const character of sanitized) {
+    bytes += Buffer.byteLength(character);
+    if (bytes > 120) break;
+    result += character;
+  }
+  return result.replace(/[. ]+$/g, '') || 'Untitled video';
 }
 function check(condition, message) {
   if (!condition) throw Object.assign(new Error(message), { status: 400 });
+}
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+export function validateMetadata(metadata = {}) {
+  check(isRecord(metadata), 'Invalid capture metadata');
+  check(metadata.title === undefined || typeof metadata.title === 'string', 'Invalid capture title');
+  check(metadata.videoType === undefined || typeof metadata.videoType === 'string', 'Invalid video type');
+  return metadata;
 }
 export function runFFmpeg(args, executable = process.env.FFMPEG_PATH || 'ffmpeg') {
   return new Promise((resolve, reject) => {
@@ -44,11 +61,12 @@ function captureFilename(id, title, streams) {
 export function createCaptureStore(root, mux = runFFmpeg) {
   const captures = new Map();
   function get(id) {
-    check(validId.test(id), 'Invalid capture ID');
+    check(typeof id === 'string' && validId.test(id), 'Invalid capture ID');
     if (!captures.has(id)) captures.set(id, { streams: new Map() });
     return captures.get(id);
   }
-  function expectedFilename(id, { title, videoType } = {}) {
+  function expectedFilename(id, metadata = {}) {
+    const { title, videoType } = validateMetadata(metadata);
     const streams = new Map(get(id).streams);
     if (typeof videoType === 'string' && videoType.startsWith('video/')) {
       // A video buffer may already exist in the player before its first upload.
@@ -59,9 +77,9 @@ export function createCaptureStore(root, mux = runFFmpeg) {
   }
   async function upload(id, streamId, index, type, body) {
     const capture = get(id);
-    check(validId.test(streamId), 'Invalid stream ID');
+    check(typeof streamId === 'string' && validId.test(streamId), 'Invalid stream ID');
     check(Number.isSafeInteger(index) && index >= 0, 'Invalid chunk index');
-    check(/^(audio|video)\//.test(type || ''), 'Invalid media type');
+    check(typeof type === 'string' && /^(audio|video)\/[^\s;]+(?:\s*;.*)?$/i.test(type), 'Invalid media type');
     check(!capture.finishing && !capture.output, 'Capture already completing');
     let stream = capture.streams.get(streamId);
     if (!stream) { stream = { type, parts: new Map() }; capture.streams.set(streamId, stream); }
@@ -88,16 +106,21 @@ export function createCaptureStore(root, mux = runFFmpeg) {
       stream.parts.get(index).ready = true;
     } catch (error) {
       // Keep the slot reserved until cleanup finishes so a retry cannot race unlink.
-      await fs.rm(part, { force: true });
+      // An exclusive-open failure may refer to a previous server's capture.
+      if (error.code !== 'EEXIST') await fs.rm(part, { force: true });
       stream.parts.delete(index);
       throw error;
     }
   }
-  async function complete(id, { streams, metadata = {} } = {}) {
+  async function complete(id, request = {}) {
     const capture = get(id);
     if (capture.output) return capture.output;
     if (capture.finishing) return capture.finishing;
+    check(isRecord(request), 'Invalid completion request');
+    const { streams, metadata = {} } = request;
+    validateMetadata(metadata);
     check(Array.isArray(streams) && streams.length > 0, 'No streams');
+    check(streams.every(stream => isRecord(stream) && typeof stream.id === 'string' && validId.test(stream.id)), 'Invalid stream manifest');
     check(new Set(streams.map(s => s.id)).size === streams.length && streams.length === capture.streams.size, 'Stream list mismatch');
     for (const { id: streamId, count } of streams) {
       const stream = capture.streams.get(streamId);
@@ -132,7 +155,10 @@ export function createCaptureStore(root, mux = runFFmpeg) {
       ...inputs.flatMap((_, index) => ['-map', `${index}:v?`, '-map', `${index}:a?`]),
       '-c', 'copy', '-f', format, '-metadata', `title=${String(metadata.title || title)}`, temporary]);
     await fs.rename(temporary, output);
-    await fs.rm(directory, { recursive: true, force: true });
+    // The committed output is valid even if removing temporary files fails.
+    try { await fs.rm(directory, { recursive: true, force: true }); }
+    catch (error) { console.warn(`Saved ${output}, but could not remove temporary files:`, error); }
+    for (const stream of capture.streams.values()) stream.parts.clear();
     return output;
   }
 

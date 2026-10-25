@@ -113,3 +113,29 @@ test('interrupted upload removes its partial file and allows a complete retry', 
   await store.upload('aborted', 'video', 0, 'video/mp4', body('complete'));
   assert.equal(await fs.readFile(path.join(root, 'parts/aborted/video.0'), 'utf8'), 'complete');
 });
+
+test('rejects malformed completion data while preserving uploaded chunks', async t => {
+  const { root, store } = await setup(t);
+  await store.upload('valid', 'video', 0, 'video/mp4', body('bytes'));
+  for (const request of [null, { streams: [null] }, { streams: [{ id: 1, count: 1 }] },
+    { streams: [{ id: 'video', count: 1 }], metadata: null },
+    { streams: [{ id: 'video', count: 1 }], metadata: { title: 123 } }]) {
+    await assert.rejects(store.complete('valid', request), { status: 400 });
+  }
+  assert.equal(await fs.readFile(path.join(root, 'parts/valid/video.0'), 'utf8'), 'bytes');
+});
+
+test('an exclusive-open conflict never deletes an existing part', async t => {
+  const { root, store } = await setup(t);
+  const directory = path.join(root, 'parts', 'old');
+  await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(path.join(directory, 'video.0'), 'previous bytes');
+  await assert.rejects(store.upload('old', 'video', 0, 'video/mp4', body('new bytes')), { code: 'EEXIST' });
+  assert.equal(await fs.readFile(path.join(directory, 'video.0'), 'utf8'), 'previous bytes');
+});
+
+test('long Unicode titles fit within filesystem component limits', () => {
+  const title = filename('🎬'.repeat(100));
+  assert.ok(Buffer.byteLength(title) <= 120);
+  assert.ok(!title.includes('\ufffd'));
+});
