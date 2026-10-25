@@ -21,4 +21,6 @@ Captures unencrypted MediaSource streams created in the page's main JavaScript c
 
 ## Verification
 
+GitHub Actions runs the **Build and verify** check on every pull request and push to `master`, and supports manual runs. It installs locked dependencies with `npm ci`, checks JavaScript syntax, runs the full test suite with FFmpeg, and builds an npm package with `npm pack`. The extension and server run directly from source, so there is no compilation step.
+
 Run `npm test`. Tests cover opt-in capture, ordinary playback isolation, existing and dynamically inserted video overlays, preloaded chunk replay, already-buffered completion, cache limits, upload connection startup, chunk ordering, missing/duplicate chunks, stream isolation, filename safety, failed merge retries, extension metadata and completion ordering, and a real FFmpeg audio/video merge. FFmpeg with libx264 and AAC encoding is needed to generate test fixtures.
