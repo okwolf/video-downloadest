@@ -1,3 +1,12 @@
+let uploadPort;
+const pendingMessages = [];
+function forwardCapture(message) {
+  if (uploadPort) uploadPort.postMessage(message);
+  else pendingMessages.push(message);
+}
+document.addEventListener('ON_APPEND_BUFFER', ({ detail }) => forwardCapture({ appendBuffer: detail }));
+document.addEventListener('ON_BUFFER_ENDED', ({ detail }) => forwardCapture({ bufferEnd: detail }));
+
 const injectedScript = document.createElement("script");
 injectedScript.src = chrome.runtime.getURL("injected-script.js");
 document.documentElement.appendChild(injectedScript);
@@ -8,12 +17,9 @@ injectedScript.remove();
   port.onmessage = ({ data }) => {
     document.dispatchEvent(new CustomEvent("VIDEO_CAPTURE_RESULT", { detail: data }));
   };
-  document.addEventListener("ON_APPEND_BUFFER", ({ detail }) => {
-    port.postMessage({ appendBuffer: detail });
-  });
-  document.addEventListener("ON_BUFFER_ENDED", ({ detail }) => {
-    port.postMessage({ bufferEnd: detail });
-  });
+  uploadPort = port;
+  for (const message of pendingMessages) port.postMessage(message);
+  pendingMessages.length = 0;
 })();
 
 async function makeExtensionFramePort(path) {
