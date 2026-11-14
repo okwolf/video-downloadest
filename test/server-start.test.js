@@ -47,13 +47,22 @@ test('extension iframe sends captured bytes to the real HTTP upload route', asyn
   await once(server, 'listening');
   t.after(() => new Promise(resolve => server.close(resolve)));
   const origin = `http://127.0.0.1:${server.address().port}`;
+  const malformed = await fetch(`${origin}/captures/bad/streams/video/0`, {
+    method: 'POST', headers: { 'content-type': 'video/mp4', 'x-capture-metadata': '%not-json' }, body: 'bytes'
+  });
+  assert.equal(malformed.status, 400);
+  await assert.rejects(fs.stat(path.join(root, 'parts/bad/video.0')), { code: 'ENOENT' });
+  const invalidManifest = await fetch(`${origin}/captures/bad/complete`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ streams: [null] })
+  });
+  assert.equal(invalidManifest.status, 400);
   const script = await fs.readFile(new URL('../iframe.js', import.meta.url), 'utf8');
   let done;
   const completed = new Promise(resolve => { done = resolve; });
-  const port = { postMessage: done };
-  const context = { window: {}, parent: {}, location: { search: '?secret=test' }, URLSearchParams, fetch: (url, options) => fetch(url.replace('http://localhost:3000', origin), options) };
+  const port = { postMessage: value => { if (value?.ready !== true) done(value); } };
+  const context = { chrome: { storage: { local: { async get(key) { return { [key]: Date.now() + 60000 }; }, async remove() {} } } }, window: {}, parent: {}, location: { search: '?secret=test' }, URLSearchParams, fetch: (url, options) => fetch(url.replace('http://localhost:3000', origin), options) };
   vm.runInNewContext(script, context);
-  context.window.onmessage({ source: context.parent, data: 'test', ports: [port] });
+  await context.window.onmessage({ source: context.parent, data: 'test', ports: [port] });
   port.onmessage({ data: { appendBuffer: { captureId: 'http-test', bufferId: 'video', bufferIndex: 0, bufferType: 'video/mp4', metadata: { title: 'Vidéo / title', videoType: 'video/mp4' }, buffer: new Uint8Array([1, 2, 3]) } } });
   port.onmessage({ data: { bufferEnd: { captureId: 'http-test', streams: [{ id: 'video', count: 1 }], metadata: { title: 'Vidéo / title' } } } });
   const result = await completed;

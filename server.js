@@ -1,6 +1,6 @@
 import express from "express";
 import { fileURLToPath } from "node:url";
-import { createCaptureStore } from "./capture-store.js";
+import { createCaptureStore, validateMetadata } from "./capture-store.js";
 
 export function createApp(
   store = createCaptureStore(fileURLToPath(new URL(".", import.meta.url)))
@@ -9,12 +9,19 @@ export function createApp(
   app.post(
     "/captures/:captureId/streams/:streamId/:index",
     async (req, res, next) => {
+      res.locals.captureRoute = { kind: "upload", ...req.params };
       try {
         if (!/^\d+$/.test(req.params.index))
           return res.status(400).json({ error: "Invalid chunk index" });
-        const metadata = req.headers["x-capture-metadata"]
-          ? JSON.parse(decodeURIComponent(req.headers["x-capture-metadata"]))
-          : {};
+        let metadata = {};
+        if (req.headers["x-capture-metadata"]) {
+          try {
+            metadata = JSON.parse(decodeURIComponent(req.headers["x-capture-metadata"]));
+          } catch {
+            throw Object.assign(new Error("Invalid capture metadata"), { status: 400 });
+          }
+        }
+        validateMetadata(metadata);
         await store.upload(
           req.params.captureId,
           req.params.streamId,
@@ -33,6 +40,10 @@ export function createApp(
   );
   app.post(
     "/captures/:captureId/complete",
+    (req, res, next) => {
+      res.locals.captureRoute = { kind: "complete", ...req.params };
+      next();
+    },
     express.json({ limit: "64kb" }),
     async (req, res, next) => {
       try {
@@ -45,19 +56,21 @@ export function createApp(
     }
   );
   app.use((error, req, res, next) => {
+    if (res.headersSent) return next(error);
+    const route = res.locals.captureRoute || {};
     if (
       req.aborted ||
       error.code === "ECONNRESET" ||
       error.code === "ERR_STREAM_PREMATURE_CLOSE"
     ) {
       console.warn(
-        `⚠️ Upload interrupted: ${req.params.captureId}/${req.params.streamId} [${req.params.index}]; waiting for retry.`
+        `⚠️ Upload interrupted: ${route.captureId}/${route.streamId} [${route.index}]; waiting for retry.`
       );
       return;
     }
-    const context = req.route?.path === "/captures/:captureId/complete"
-      ? `Capture ${req.params.captureId}`
-      : `Upload ${req.params.captureId}/${req.params.streamId} [${req.params.index}]`;
+    const context = route.kind === "complete"
+      ? `Capture ${route.captureId}`
+      : `Upload ${route.captureId}/${route.streamId} [${route.index}]`;
     console.error(`❌ ${context} failed:`, error.status && error.status < 500 ? error.message : error);
     res.status(error.status || 500).json({ error: error.message });
   });
