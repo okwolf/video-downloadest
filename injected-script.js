@@ -1,5 +1,6 @@
 (() => {
 const videoElements = new Set();
+const announcedPlayers = new WeakSet();
 const captureDisplays = new Map();
 const selections = new WeakMap();
 const playbackAllowed = new WeakMap();
@@ -11,6 +12,12 @@ const shadowRoots = new WeakMap();
 const capturePreloadLimit = 64 * 1024 * 1024;
 const pagePreloadLimit = 128 * 1024 * 1024;
 let preloadBytes = 0;
+
+function randomId() {
+  // getRandomValues is also available on insecure HTTP origins.
+  return crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)),
+    byte => byte.toString(16).padStart(2, '0')).join('');
+}
 
 function sourceKey(player) {
   return player.srcObject || player.getAttribute('src') || player.currentSrc || '';
@@ -72,8 +79,9 @@ function enabledCapture(capture) {
 function showCapture(capture, player = playerForCapture(capture)) {
   if (!player?.isConnected || !capture.sessionId) return;
   const rows = capture.buffers.map(buffer => buffer.progress).filter(Boolean);
+  // Keep bridge payloads free of DOM nodes so isolated-world listeners receive them.
   document.dispatchEvent(new CustomEvent('VIDEO_CAPTURE_STATUS', {
-    detail: { player, sessionId: capture.sessionId, captureId: capture.id,
+    detail: { sessionId: capture.sessionId, captureId: capture.id,
       text: [capture.status || '📥 Capturing video', ...rows].join('\n') }
   }));
 }
@@ -89,7 +97,7 @@ function enableDownload(player, sessionId) {
   Promise.resolve(player.play()).catch(error => {
     if (selections.get(player)?.sessionId !== sessionId) return;
     document.dispatchEvent(new CustomEvent('VIDEO_CAPTURE_STATUS', {
-      detail: { player, sessionId, text: `❌ Playback could not start: ${error.message}. Use the player’s play button to retry.` }
+      detail: { sessionId, text: `❌ Playback could not start: ${error.message}. Use the player’s play button to retry.` }
     }));
   });
 }
@@ -132,7 +140,7 @@ function announcePlayer(player) {
 function registerPlayer(player) {
   if (!videoElements.has(player)) {
     videoElements.add(player);
-    player.setAttribute('data-video-downloadest-id', crypto.randomUUID());
+    player.setAttribute('data-video-downloadest-id', randomId());
     const listeners = {
       play: () => {
         if (!syncSelection(player) && !hasPlaybackGrant(player)) player.pause();
@@ -157,6 +165,10 @@ function registerPlayer(player) {
     playerCleanups.set(player, () => {
       for (const [name, callback] of Object.entries(listeners)) player.removeEventListener(name, callback);
     });
+  }
+  // Detached play() calls can register a player before the bridge can find it.
+  if (player.isConnected && !announcedPlayers.has(player)) {
+    announcedPlayers.add(player);
     announcePlayer(player);
   }
   syncSelection(player);
@@ -183,6 +195,7 @@ function cleanup() {
     playerCleanups.get(player)?.();
     playerCleanups.delete(player);
     videoElements.delete(player);
+    announcedPlayers.delete(player);
   }
   for (const [root, state] of rootObservers) {
     if (root === document) continue;
@@ -205,11 +218,13 @@ function discoverVideos(root = document) {
   }
 }
 function observeRoot(root) {
-  if (rootObservers.has(root)) return;
-  const observer = new MutationObserver(() => { discoverVideos(root); cleanup(); });
-  rootObservers.set(root, { observer, connected: root === document || root.host.isConnected });
-  observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['autoplay', 'src'] });
-  for (const type of ['pointerdown', 'click', 'keydown']) root.addEventListener(type, onGesture, true);
+  if (!rootObservers.has(root)) {
+    const observer = new MutationObserver(() => { discoverVideos(root); cleanup(); });
+    rootObservers.set(root, { observer, connected: root === document || root.host.isConnected });
+    observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['autoplay', 'src'] });
+    for (const type of ['pointerdown', 'click', 'keydown']) root.addEventListener(type, onGesture, true);
+  }
+  // Attaching a prepared host does not mutate its already-observed shadow tree.
   discoverVideos(root);
 }
 const originalAttachShadow = Element.prototype.attachShadow;
@@ -307,7 +322,7 @@ function finishCapture(capture, player) {
 const OGMediaSource = window.MediaSource;
 window.MediaSource = function (...args) {
   const newSource = new OGMediaSource(...args);
-  const capture = { id: crypto.randomUUID(), buffers: [], completed: false, preload: [], preloadBytes: 0, ended: false };
+  const capture = { id: randomId(), buffers: [], completed: false, preload: [], preloadBytes: 0, ended: false };
   captureDisplays.set(capture.id, capture);
   sourceCaptures.set(newSource, capture);
   capture.source = newSource;
@@ -332,7 +347,7 @@ window.MediaSource = function (...args) {
     const [bufferType] = args;
     const newBuffer = newSource.OGaddSourceBuffer(...args);
     newBuffer.ogAppendBuffer = newBuffer.appendBuffer;
-    newBuffer.bufferId = crypto.randomUUID();
+    newBuffer.bufferId = randomId();
     newBuffer.capture = capture;
     newBuffer.bufferType = bufferType;
     newBuffer.chunkCount = 0;

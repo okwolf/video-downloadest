@@ -8,6 +8,10 @@ const overlays = new Map();
 const grants = new Map();
 const createElement = document.createElement.bind(document);
 let frame;
+function randomId() {
+  return crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)),
+    byte => byte.toString(16).padStart(2, '0')).join('');
+}
 function sourceKey(player) {
   return player.srcObject || player.getAttribute('src') || player.currentSrc || '';
 }
@@ -152,7 +156,7 @@ function ensureOverlay(player) {
     if (!event.isTrusted || overlay.sessionId) return;
     event.preventDefault();
     event.stopPropagation();
-    const sessionId = crypto.randomUUID();
+    const sessionId = randomId();
     overlay.sessionId = sessionId;
     grants.set(sessionId, { player, sessionId, source: sourceKey(player) });
     button.hidden = true;
@@ -191,7 +195,7 @@ function connectUploader() {
   return connection;
 }
 async function makeExtensionFramePort(path) {
-  const secret = crypto.randomUUID();
+  const secret = randomId();
   // A web-accessible iframe alone is not authority to use localhost permissions.
   // Only this isolated script can create its one-use connection capability.
   await chrome.storage.local.set({ [`upload-port-${secret}`]: Date.now() + 60000 });

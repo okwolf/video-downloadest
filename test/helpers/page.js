@@ -1,10 +1,11 @@
 import vm from 'node:vm';
 import fs from 'node:fs/promises';
+import { webcrypto } from 'node:crypto';
 const injected = await fs.readFile(new URL('../../injected-script.js', import.meta.url), 'utf8');
 const bridge = await fs.readFile(new URL('../../content-script.js', import.meta.url), 'utf8');
 
-export function setupPlayerPage({ existing = false, bridgeFirst = false, frameReady = true } = {}) {
-  const messages = [], uploaded = [], observers = [], frames = [];
+export function setupPlayerPage({ existing = false, bridgeFirst = false, frameReady = true, secureContext = true } = {}) {
+  const messages = [], statuses = [], uploaded = [], observers = [], frames = [];
   let sequence = 0;
   let port;
   let framePort;
@@ -88,6 +89,7 @@ export function setupPlayerPage({ existing = false, bridgeFirst = false, frameRe
   const dispatch = document.dispatchEvent.bind(document);
   document.dispatchEvent = event => {
     if (['ON_APPEND_BUFFER', 'ON_BUFFER_ENDED'].includes(event.type)) messages.push({ name: event.type, ...event.detail });
+    if (event.type === 'VIDEO_CAPTURE_STATUS') statuses.push(event.detail);
     return dispatch(event);
   };
   const createPlayer = () => document.body.appendChild(document.createElement('video'));
@@ -104,7 +106,9 @@ export function setupPlayerPage({ existing = false, bridgeFirst = false, frameRe
     requestAnimationFrame: callback => { frames.push(callback); return frames.length; },
     setTimeout: frameReady === false ? callback => queueMicrotask(callback) : setTimeout, clearTimeout,
     document, window: { MediaSource: NativeMediaSource }, console,
-    crypto: { randomUUID: () => `id-${sequence++}` }, navigator: { mediaSession: {}, userActivation: { isActive: false } },
+    crypto: { getRandomValues: webcrypto.getRandomValues.bind(webcrypto),
+      ...(secureContext ? { randomUUID: () => `id-${sequence++}` } : {}) },
+    navigator: { mediaSession: {}, userActivation: { isActive: false } },
     location: { href: 'https://example.test/watch' },
     CustomEvent: function (type, { detail } = {}) { return { type, detail }; },
     chrome: { dom: { openOrClosedShadowRoot: element => element.shadow }, storage: { local: { async set() {}, async remove() {} } }, runtime: { getURL: path => `chrome-extension://extension/${path.replace(/^\//, '')}` } },
@@ -115,7 +119,7 @@ export function setupPlayerPage({ existing = false, bridgeFirst = false, frameRe
   vm.runInNewContext(injected, context);
   if (!bridgeFirst) vm.runInNewContext(bridge, { ...context });
   const actualPlayer = player || createPlayer();
-  const discover = () => { for (const state of [...observers]) if (state.root) state.callback(); };
+  const discover = root => { for (const state of [...observers]) if (state.root && (!root || state.root === root)) state.callback(); };
   discover();
   const overlayHosts = () => document.documentElement.children.filter(el => el.shadow?.children[0]?.tagName === 'button');
   const tick = () => { const pending = frames.splice(0); for (const callback of pending) callback(); };
@@ -123,7 +127,7 @@ export function setupPlayerPage({ existing = false, bridgeFirst = false, frameRe
     const event = { type: key ? 'keydown' : 'pointerdown', key, isTrusted: trusted, composedPath: () => path };
     document.dispatchEvent(event);
   };
-  return { messages, uploaded, context, player: actualPlayer, document, createPlayer, discover, frame: tick, gesture,
+  return { messages, statuses, uploaded, context, player: actualPlayer, document, createPlayer, discover, frame: tick, gesture,
     get overlayHosts() { return overlayHosts(); },
     click(index = 0, trusted = true) {
       overlayHosts()[index].shadow.children[0].dispatchEvent({ type: 'click', isTrusted: trusted, preventDefault() {}, stopPropagation() {} });

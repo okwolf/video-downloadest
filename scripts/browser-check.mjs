@@ -15,7 +15,7 @@ let chrome, socket, server;
 try {
   const mediaPath = path.join(temporary, 'fixture.mp4');
   await runFFmpeg(['-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=320x180:r=10', '-t', '10',
-    '-c:v', 'libx264', '-profile:v', 'baseline', '-pix_fmt', 'yuv420p', '-movflags', 'frag_keyframe+empty_moov', mediaPath]);
+    '-c:v', 'libx264', '-profile:v', 'baseline', '-pix_fmt', 'yuv420p', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', mediaPath]);
   const media = await fs.readFile(mediaPath);
   const html = `<!doctype html><style>body{margin:24px;background:#eee}video{display:block}button{margin:8px}</style>
     <div id="box" style="width:640px"><video id="video" width="640" height="360" controls muted autoplay></video><button id="normal">Play normally</button></div><button id="outside">Unrelated button</button>
@@ -38,6 +38,7 @@ try {
   await once(server, 'listening');
   const executable = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
   chrome = spawn(executable, ['--headless=new', '--disable-background-networking', '--disable-component-update', '--no-first-run',
+    '--no-proxy-server', '--host-resolver-rules=MAP review.test 127.0.0.1',
     '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${path.join(temporary, 'profile')}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = await new Promise((resolve, reject) => {
     let output = '';
@@ -130,7 +131,20 @@ try {
       for (const child of [...(node.children || []), ...(node.shadowRoots || [])]) walk(child);
     }; walk(root); return buttons;
   };
+  const pageText = async () => {
+    const { root } = await call('DOM.getDocument', { depth: -1, pierce: true });
+    const texts = [];
+    const walk = node => {
+      if (['SCRIPT', 'STYLE'].includes(node.nodeName)) return;
+      if (node.nodeName === '#text') texts.push(node.nodeValue);
+      for (const child of [...(node.children || []), ...(node.shadowRoots || [])]) walk(child);
+    };
+    walk(root);
+    return texts.join('\n');
+  };
   const clickDownload = async (index = 0) => {
+    // Source resets reposition the prompt on the next animation frame.
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
     const buttons = await downloadButtons();
     if (!buttons[index]) console.log('Missing button:', await evaluate('globalThis.reviewBridgeError', true), await evaluate('document.documentElement.outerHTML'), JSON.stringify(errors));
     assert.ok(buttons[index], 'Download button exists');
@@ -139,6 +153,7 @@ try {
   };
   await call('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
   await until('window.preloaded === true');
+  await until('video.readyState >= 2');
   assert.equal(await evaluate('Boolean(earlyBuffer.capture)'), true, 'Earliest inline MediaSource is hooked');
   assert.equal(await evaluate('video.paused'), true, 'Autoplay is blocked');
   await clickElement('outside');
@@ -158,6 +173,15 @@ try {
   await evaluate('video.pause();new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
   await clickDownload();
   await until('reviewUploads.length === 1', true);
+  assert.match(await pageText(), /📥 Capturing video/, 'Page status reaches the isolated overlay');
+  await evaluate(`earlyBuffer.appendBuffer(new Uint8Array());
+    new Promise(resolve=>earlyBuffer.addEventListener('updateend',resolve,{once:true}))`);
+  await until('reviewUploads.length === 2', true);
+  assert.match(await pageText(), /video\/mp4: 2 chunks, [\d.]+ MiB captured; [\d.]+s currently buffered/, 'Overlay shows chunk, byte, and buffered progress during capture');
+  await evaluate(`earlyBuffer.appendBuffer(new Uint8Array());
+    new Promise(resolve=>earlyBuffer.addEventListener('updateend',resolve,{once:true}))`);
+  await until('reviewUploads.length === 3', true);
+  assert.match(await pageText(), /video\/mp4: 3 chunks/, 'Overlay advances on subsequent buffer updates');
   assert.equal(await evaluate('reviewUploads[0].appendBuffer.bufferIndex', true), 0, 'Preload replay starts at zero');
   await evaluate(`window.oldBuffer=earlyBuffer;
     window.nextSource=new MediaSource(); video.src=URL.createObjectURL(nextSource);
@@ -166,10 +190,10 @@ try {
       nextBuffer.addEventListener('updateend',()=>window.nextReady=true,{once:true});nextBuffer.appendBuffer(await originalBytes)
     },{once:true})`);
   await until('window.nextReady === true');
-  assert.equal(await evaluate('reviewUploads.length', true), 1, 'New source is not automatically uploaded');
+  assert.equal(await evaluate('reviewUploads.length', true), 3, 'New source is not automatically uploaded');
   assert.equal(await evaluate('video.paused'), true);
   await until('oldBuffer.capture.disposed === true');
-  await clickDownload(); await until('reviewUploads.length === 2', true);
+  await clickDownload(); await until('reviewUploads.length === 4', true);
   await evaluate(`window.shadowHost=document.createElement('section');
     const root=shadowHost.attachShadow({mode:'closed'});root.innerHTML='<video width="320" height="180" autoplay muted></video>';
     document.body.append(shadowHost);window.shadowVideo=root.querySelector('video')`);
@@ -196,8 +220,39 @@ try {
   await evaluate('window.retired=nextBuffer; video.remove(); shadowHost.remove()');
   await until('retired.capture.disposed === true');
   await until('document.querySelectorAll("video").length === 0');
+
+  await evaluate(`window.preparedHost=document.createElement('section');
+    window.preparedRoot=preparedHost.attachShadow({mode:'open'});
+    preparedRoot.innerHTML='<video width="320" height="180" muted src="/fixture.mp4"></video>';
+    window.preparedVideo=preparedRoot.querySelector('video');
+    new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  await evaluate('document.body.append(preparedHost);new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  assert.equal((await downloadButtons()).length, 1, 'Shadow video prepared while detached gains an overlay');
+  await clickDownload(); await until('!preparedVideo.paused');
+  await evaluate('preparedHost.remove();new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+
+  await evaluate(`window.detachedVideo=document.createElement('video');
+    detachedVideo.width=320;detachedVideo.height=180;detachedVideo.muted=true;detachedVideo.src='/fixture.mp4';
+    detachedVideo.play().catch(()=>{});document.body.append(detachedVideo);
+    new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+  assert.equal((await downloadButtons()).length, 1, 'Video registered by detached play gains an overlay');
+  await clickDownload(); await until('!detachedVideo.paused');
+
+  // A non-localhost HTTP origin exercises the real secure-context API restrictions.
+  await call('Page.navigate', { url: `http://review.test:${server.address().port}/` });
+  await until('window.preloaded === true');
+  await until('video.readyState >= 2');
+  assert.equal(await evaluate('isSecureContext'), false);
+  assert.equal(await evaluate('typeof crypto.randomUUID'), 'undefined');
+  assert.equal(await evaluate('video.autoplay'), false, 'HTTP autoplay attribute is removed');
+  assert.equal(await evaluate('video.paused'), true, 'HTTP autoplay is blocked');
+  assert.equal((await downloadButtons()).length, 1, 'HTTP video gets an overlay');
+  await clickDownload(); await until('reviewUploads.length === 1', true);
+  await evaluate('earlySource.endOfStream()');
+  await until('reviewUploads.some(message=>message.bufferEnd)', true);
+  assert.equal(await evaluate('reviewUploads[0].appendBuffer.buffer.byteLength', true), media.byteLength, 'HTTP capture uploads complete fixture bytes');
   assert.equal(errors.length, 0, JSON.stringify(errors));
-  console.log('Browser checks passed: early hooks, isolated consent, trusted controls, preload replay, source reset, shadow DOM, cleanup.');
+  console.log('Browser checks passed: early hooks, isolated consent, trusted controls, preload replay, source reset, shadow DOM, detached players, HTTP origins, cleanup.');
 } finally {
   socket?.close();
   if (chrome?.pid && chrome.exitCode === null) {

@@ -16,6 +16,30 @@ async function connectFrame(code, context, port) {
 
 import { setupPlayerPage } from './helpers/page.js';
 
+test('progress and playback errors use data-only bridge messages', async () => {
+  const page = setupPlayerPage();
+  const source = new page.context.window.MediaSource();
+  page.player.srcObject = source;
+  const buffer = source.addSourceBuffer('video/mp4');
+  page.click();
+  buffer.appendBuffer(new Uint8Array(1048576)); buffer.updateend();
+  const text = page.overlayHosts[0].shadow.children.at(-1);
+  assert.match(text.textContent, /video\/mp4: 1 chunks, 1.00 MiB captured; 5.0s currently buffered \(50.0%\)/);
+  buffer.appendBuffer(new Uint8Array([1])); buffer.updateend();
+  assert.match(text.textContent, /video\/mp4: 2 chunks/);
+  source.endOfStream();
+  assert.match(text.textContent, /Waiting for uploads and merge/);
+  assert.ok(page.statuses.length > 0);
+  for (const status of page.statuses) assert.doesNotThrow(() => structuredClone(status));
+
+  const failed = setupPlayerPage();
+  failed.player.play = () => Promise.reject(new Error('playback failed'));
+  failed.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(failed.statuses.at(-1).text, /Playback could not start: playback failed/);
+  assert.doesNotThrow(() => structuredClone(failed.statuses.at(-1)));
+});
+
 test('download click starts only the selected video and preserves paired capture completion', async () => {
   const { messages, result, overlayHosts, context, player, frame, click } = setupPlayerPage();
   assert.equal(overlayHosts[0].style.left, '340px');
@@ -324,7 +348,54 @@ test('removed players release retained preloads and reconnect with a new overlay
   assert.equal(page.overlayHosts.length, 1);
 });
 
+test('HTTP contexts without randomUUID retain autoplay blocking and downloads', async () => {
+  const page = setupPlayerPage({ secureContext: false });
+  const source = new page.context.window.MediaSource();
+  page.player.srcObject = source;
+  const buffer = source.addSourceBuffer('video/mp4');
+  page.player.autoplay = true;
+  page.discover();
+  assert.equal(page.player.autoplay, false);
+  await assert.rejects(page.player.play(), { name: 'NotAllowedError' });
+  page.click();
+  buffer.appendBuffer(new Uint8Array([1, 2]));
+  source.endOfStream();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(page.player.paused, false);
+  assert.equal(page.uploaded.filter(message => message.appendBuffer).length, 1);
+  assert.equal(page.uploaded.filter(message => message.bufferEnd).length, 1);
+});
+
+test('a video first registered by detached play gains an overlay on attachment', async () => {
+  const page = setupPlayerPage();
+  const video = page.document.createElement('video');
+  await assert.rejects(video.play(), { name: 'NotAllowedError' });
+  page.document.body.appendChild(video);
+  page.discover(page.document); page.frame();
+  assert.equal(page.overlayHosts.length, 2);
+  page.click(1);
+  assert.equal(video.paused, false);
+  page.discover(page.document); page.frame();
+  assert.equal(page.overlayHosts.length, 2);
+});
+
 for (const mode of ['open', 'closed']) {
+  test(`${mode} shadow videos prepared while detached gain overlays on attachment`, async () => {
+    const page = setupPlayerPage();
+    const host = page.document.createElement('section');
+    const root = host.attachShadow({ mode });
+    const video = root.appendChild(page.document.createElement('video'));
+    page.discover(root); page.frame();
+    assert.equal(page.overlayHosts.length, 1);
+    page.document.body.appendChild(host);
+    // Connecting the host mutates the document, but not the shadow tree.
+    page.discover(page.document); page.frame();
+    assert.equal(page.overlayHosts.length, 2);
+    await assert.rejects(video.play(), { name: 'NotAllowedError' });
+    page.click(1);
+    assert.equal(video.paused, false);
+  });
+
   test(`videos inserted into ${mode} shadow roots are discovered and block autoplay`, async () => {
     const page = setupPlayerPage();
     const host = page.document.createElement('section');
