@@ -3,7 +3,6 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
     "test": "node --test",
     "test:browser": "node scripts/browser-check.mjs"
   },
@@ -13,8 +12,5 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
-  "dependencies": {
-    "express": "4.21.1"
-  }
+  "description": ""
 }

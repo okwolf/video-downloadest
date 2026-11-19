@@ -1,8 +1,8 @@
 import vm from 'node:vm';
 import fs from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
-const injected = await fs.readFile(new URL('../../injected-script.js', import.meta.url), 'utf8');
-const bridge = await fs.readFile(new URL('../../content-script.js', import.meta.url), 'utf8');
+const injected = await fs.readFile(new URL('../../extension/injected-script.js', import.meta.url), 'utf8');
+const bridge = await fs.readFile(new URL('../../extension/content-script.js', import.meta.url), 'utf8');
 
 export function setupPlayerPage({ existing = false, bridgeFirst = false, frameReady = true, secureContext = true } = {}) {
   const messages = [], statuses = [], uploaded = [], observers = [], frames = [];

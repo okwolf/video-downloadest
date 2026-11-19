@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable, PassThrough } from 'node:stream';
-import { createCaptureStore, filename, runFFmpeg } from '../capture-store.js';
+import { createCaptureStore, filename, runFFmpeg } from '../native-host/capture-store.js';
 
 async function setup(t, mux) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'capture-test-'));
@@ -13,13 +13,13 @@ async function setup(t, mux) {
 }
 const body = value => Readable.from([Buffer.from(value)]);
 test('store functions work independently and keep captures isolated between stores', async t => {
-  const { store: first } = await setup(t);
-  const { store: second } = await setup(t);
-  const { upload, expectedFilename } = first;
-  await upload('shared-id', 'video', 0, 'video/mp4', body('video'));
-  assert.equal(expectedFilename('shared-id', { title: 'Player' }), 'Player [shared-id].mp4');
-  assert.equal(second.get('shared-id').streams.size, 0);
-  assert.equal(second.expectedFilename('shared-id', { title: 'Player' }), 'Player [shared-id] (container unknown)');
+  const { root: firstRoot, store: first } = await setup(t);
+  const { root: secondRoot, store: second } = await setup(t);
+  await first.upload('shared-id', 'video', 0, 'video/mp4', body('video'));
+  assert.equal(await fs.readFile(path.join(firstRoot, 'parts/shared-id/video.0'), 'utf8'), 'video');
+  await assert.rejects(fs.stat(path.join(secondRoot, 'parts/shared-id')), { code: 'ENOENT' });
+  await second.upload('shared-id', 'video', 0, 'video/mp4', body('other video'));
+  assert.equal(await fs.readFile(path.join(secondRoot, 'parts/shared-id/video.0'), 'utf8'), 'other video');
 });
 test('validates complete manifests, orders chunks, and completes only once', async t => {
   let calls = 0;
@@ -48,7 +48,6 @@ test('failed mux retains parts and can be retried', async t => {
     await fs.writeFile(args.at(-1), 'ok');
   });
   await store.upload('one', 'audio', 0, 'audio/mp4', body('audio'));
-  assert.equal(store.expectedFilename('one', { title: 'Player', videoType: 'video/mp4' }), 'Player [one].mp4');
   const request = { streams: [{ id: 'audio', count: 1 }] };
   await assert.rejects(store.complete('one', request), /mux failure/);
   assert.equal(await fs.readFile(path.join(root, 'parts/one/audio.0'), 'utf8'), 'audio');
@@ -108,7 +107,6 @@ test('interrupted upload removes its partial file and allows a complete retry', 
   while (stream.listenerCount('error') === 0) await new Promise(resolve => setImmediate(resolve));
   stream.destroy(Object.assign(new Error('aborted'), { code: 'ECONNRESET' }));
   await failed;
-  assert.equal(store.get('aborted').streams.get('video').parts.size, 0);
   await assert.rejects(fs.stat(path.join(root, 'parts/aborted/video.0')), { code: 'ENOENT' });
   await store.upload('aborted', 'video', 0, 'video/mp4', body('complete'));
   assert.equal(await fs.readFile(path.join(root, 'parts/aborted/video.0'), 'utf8'), 'complete');
