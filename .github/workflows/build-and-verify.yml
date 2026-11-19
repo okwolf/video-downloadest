@@ -5,6 +5,8 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -46,3 +48,61 @@ jobs:
       # The extension and server run from source, so no compilation is needed.
       - name: Build package
         run: npm pack --pack-destination "$RUNNER_TEMP"
+
+  windows-companion:
+    name: Build Windows companion
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      APP_VERSION: ${{ github.event.release.tag_name || '0.1.0' }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and package Windows companion
+        shell: pwsh
+        run: ./scripts/package-companion-windows.ps1 -Version "$env:APP_VERSION"
+
+      - name: Upload Windows companion artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-companion
+          path: dist/windows/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  attach-windows-release-asset:
+    name: Attach Windows companion to release
+    if: github.event_name == 'release' && github.event.action == 'published'
+    needs: [build-and-verify, windows-companion]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows companion artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: windows-companion
+          path: dist/windows
+
+      - name: Attach package to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" dist/windows/*.zip --clobber
