@@ -17,7 +17,7 @@ if (-not (Test-Path (Join-Path $Root "node_modules\express\package.json"))) {
 
 Remove-Item $App -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $App -ItemType Directory -Force | Out-Null
-dotnet publish $Project -c $Configuration -r $RuntimeIdentifier --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $App
+dotnet publish $Project -c $Configuration -r $RuntimeIdentifier --self-contained false -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o $App
 
 $Server = Join-Path $App "Server"
 $Extension = Join-Path $App "Extension"
@@ -37,12 +37,13 @@ Copy-Item (Join-Path $Root "iframe.js") (Join-Path $Extension "iframe.js")
 Video Downloadest for Windows
 
 1. Extract this folder to a location where you want to keep the app.
-2. Run VideoDownloadestCompanion.exe. On first launch, it downloads Node.js and FFmpeg.
-3. In the app, choose Copy folder path.
-4. Open Chrome extensions and turn on Developer mode.
-5. Choose Load unpacked, paste the copied folder path into the picker, and select the folder.
+2. Install the .NET 8 Desktop Runtime (x64) if it is not already installed: https://dotnet.microsoft.com/en-us/download/dotnet/8.0/runtime
+3. Run VideoDownloadestCompanion.exe. On first launch, it downloads Node.js and FFmpeg.
+4. In the app, choose Copy folder path.
+5. Open Chrome extensions and turn on Developer mode.
+6. Choose Load unpacked, paste the copied folder path into the picker, and select the folder.
 
-Requirements: Windows 10/11 x64, Google Chrome, and an internet connection for the initial runtime downloads.
+Requirements: Windows 10/11 x64, .NET 8 Desktop Runtime x64, Google Chrome, and an internet connection for the initial runtime downloads.
 "@ | Set-Content (Join-Path $App "Install Guide.txt") -Encoding UTF8
 
 Remove-Item $Zip -Force -ErrorAction SilentlyContinue
