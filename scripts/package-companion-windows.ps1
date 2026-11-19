@@ -17,7 +17,7 @@ if (-not (Test-Path (Join-Path $Root "node_modules\express\package.json"))) {
 
 Remove-Item $App -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $App -ItemType Directory -Force | Out-Null
-dotnet publish $Project -c $Configuration -r $RuntimeIdentifier --self-contained false -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o $App
+dotnet publish $Project -c $Configuration -r $RuntimeIdentifier --self-contained false -p:PublishSingleFile=true -o $App
 
 $Server = Join-Path $App "Server"
 $Extension = Join-Path $App "Extension"
