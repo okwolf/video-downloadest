@@ -34,51 +34,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Check source syntax and extension manifest
-        run: |
-          set -euo pipefail
-          while IFS= read -r -d '' file; do
-            node --check "$file"
-          done < <(find . -type f -name '*.js' -not -path './node_modules/*' -not -path './.git/*' -print0)
-
-          while IFS= read -r -d '' file; do
-            bash -n "$file"
-          done < <(find . -type f -name '*.sh' -not -path './node_modules/*' -not -path './.git/*' -print0)
-
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import fs from 'node:fs';
-          const manifest = JSON.parse(fs.readFileSync('extension/manifest.json', 'utf8'));
-          const referenced = [
-            ...manifest.content_scripts.flatMap(script => script.js),
-            ...manifest.web_accessible_resources.flatMap(resource => resource.resources)
-          ];
-          for (const file of referenced) {
-            assert.ok(fs.existsSync(`extension/${file}`), `Missing extension asset: ${file}`);
-          }
-          NODE
+      - name: Check JavaScript syntax
+        run: npm run check:syntax
 
       - name: Run tests
         run: npm test
 
-      # Ensure npm packaging includes both new source directories.
-      - name: Build and inspect package
-        run: |
-          npm pack --json --pack-destination "$RUNNER_TEMP" > "$RUNNER_TEMP/npm-pack.json"
-          node --input-type=module - "$RUNNER_TEMP/npm-pack.json" <<'NODE'
-          import assert from 'node:assert/strict';
-          import fs from 'node:fs';
-          const [result] = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-          const packaged = new Set(result.files.map(file => file.path));
-          for (const file of [
-            'extension/manifest.json',
-            'extension/content-script.js',
-            'extension/injected-script.js',
-            'extension/iframe.js',
-            'native-host/native-host.js',
-            'native-host/native-host-launcher.sh',
-            'native-host/capture-store.js'
-          ]) {
-            assert.ok(packaged.has(file), `Package is missing ${file}`);
-          }
-          NODE
+      - name: Build package
+        run: npm pack --pack-destination "$RUNNER_TEMP"

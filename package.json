@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "check:syntax": "node scripts/check-js-syntax.mjs",
     "test": "node --test",
     "test:browser": "node scripts/browser-check.mjs"
   },
