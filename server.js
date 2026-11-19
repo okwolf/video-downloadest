@@ -1,11 +1,13 @@
 import express from "express";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { createCaptureStore, validateMetadata } from "./capture-store.js";
 
 export function createApp(
   store = createCaptureStore(fileURLToPath(new URL(".", import.meta.url)))
 ) {
   const app = express();
+  app.get("/health", (_req, res) => res.json({ ok: true }));
   app.post(
     "/captures/:captureId/streams/:streamId/:index",
     async (req, res, next) => {
@@ -79,7 +81,11 @@ export function createApp(
 const entry = process.argv[1];
 const serverPath = fileURLToPath(import.meta.url);
 if (entry === serverPath || (entry && `${entry}.js` === serverPath)) {
-  createApp().listen(3000, "127.0.0.1", () =>
+  const dataRoot = process.env.VIDEO_DOWNLOADEST_DATA_DIR
+    ? path.resolve(process.env.VIDEO_DOWNLOADEST_DATA_DIR)
+    : fileURLToPath(new URL(".", import.meta.url));
+  const store = createCaptureStore(dataRoot);
+  createApp(store).listen(3000, "127.0.0.1", () =>
     console.log("Capture server listening on http://localhost:3000")
   );
 }

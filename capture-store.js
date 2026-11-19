@@ -134,7 +134,7 @@ export function createCaptureStore(root, mux = runFFmpeg) {
   async function assemble(id, capture, streams, metadata) {
     const [extension, format] = outputFormat(capture.streams);
     const directory = path.join(root, 'parts', id);
-    const outputDirectory = path.join(root, 'buffers');
+    const outputDirectory = path.join(root, 'completed');
     await fs.mkdir(outputDirectory, { recursive: true });
     const inputs = [];
     for (const { id: streamId, count } of streams) {

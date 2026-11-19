@@ -37,7 +37,7 @@ test('validates complete manifests, orders chunks, and completes only once', asy
   const request = { streams: [{ id: 'video', count: 2 }], metadata: { title: '../A/B: title' } };
   const [a, b] = await Promise.all([store.complete('capture', request), store.complete('capture', request)]);
   assert.equal(a, b);
-  assert.equal(path.dirname(a), path.join(root, 'buffers'));
+  assert.equal(path.dirname(a), path.join(root, 'completed'));
   assert.equal(calls, 1);
   assert.equal(await store.complete('capture', request), a);
 });
