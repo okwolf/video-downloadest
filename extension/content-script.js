@@ -219,6 +219,11 @@ async function makeExtensionFramePort(path) {
     const ready = new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Upload frame did not connect.')), 10000);
       mc.port1.onmessage = ({ data }) => {
+        if (data?.ready === false) {
+          clearTimeout(timer);
+          reject(new Error(data.error || 'The Native Messaging host could not connect.'));
+          return;
+        }
         if (data?.ready !== true) return;
         clearTimeout(timer);
         mc.port1.onmessage = null;

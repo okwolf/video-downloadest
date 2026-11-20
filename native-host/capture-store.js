@@ -25,7 +25,7 @@ function check(condition, message) {
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
-export function validateMetadata(metadata = {}) {
+function validateMetadata(metadata = {}) {
   check(isRecord(metadata), 'Invalid capture metadata');
   check(metadata.title === undefined || typeof metadata.title === 'string', 'Invalid capture title');
   check(metadata.videoType === undefined || typeof metadata.videoType === 'string', 'Invalid video type');
@@ -64,16 +64,6 @@ export function createCaptureStore(root, mux = runFFmpeg) {
     check(typeof id === 'string' && validId.test(id), 'Invalid capture ID');
     if (!captures.has(id)) captures.set(id, { streams: new Map() });
     return captures.get(id);
-  }
-  function expectedFilename(id, metadata = {}) {
-    const { title, videoType } = validateMetadata(metadata);
-    const streams = new Map(get(id).streams);
-    if (typeof videoType === 'string' && videoType.startsWith('video/')) {
-      // A video buffer may already exist in the player before its first upload.
-      streams.set('announced-video', { type: videoType });
-    }
-    try { return captureFilename(id, title, streams); }
-    catch { return `${filename(title)} [${id}] (container unknown)`; }
   }
   async function upload(id, streamId, index, type, body) {
     const capture = get(id);
@@ -162,5 +152,5 @@ export function createCaptureStore(root, mux = runFFmpeg) {
     return output;
   }
 
-  return { get, expectedFilename, upload, complete };
+  return { upload, complete };
 }

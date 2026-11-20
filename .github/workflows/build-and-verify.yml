@@ -35,14 +35,10 @@ jobs:
         run: npm ci
 
       - name: Check JavaScript syntax
-        run: |
-          for file in *.js test/*.js; do
-            node --check "$file"
-          done
+        run: npm run check:syntax
 
       - name: Run tests
         run: npm test
 
-      # The extension and server run from source, so no compilation is needed.
       - name: Build package
         run: npm pack --pack-destination "$RUNNER_TEMP"

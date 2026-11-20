@@ -12,7 +12,7 @@ trap 'rm -rf "$CACHE_DIR" "$ROOT/dist/AppIcon.icns" "$ROOT/dist/AppIcon.iconset"
 command -v swiftc >/dev/null || { echo "Xcode Command Line Tools are required." >&2; exit 1; }
 
 rm -rf "$APP"
-mkdir -p "$ROOT/dist/module-cache" "$CONTENTS/MacOS" "$RESOURCES/Server" "$RESOURCES/Extension"
+mkdir -p "$ROOT/dist/module-cache" "$CONTENTS/MacOS" "$RESOURCES/NativeHost" "$RESOURCES/Extension"
 rm -rf "$CACHE_DIR"
 mkdir -p "$CACHE_DIR"
 swiftc -O -target arm64-apple-macosx13.0 \
@@ -29,10 +29,11 @@ sips -s format icns "$ROOT/dist/AppIcon.iconset/icon_512x512.png" \
 cp "$ROOT/dist/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 rm -rf "$ROOT/dist/AppIcon.iconset" "$ROOT/dist/generate-icon"
 
-cp "$ROOT/server.js" "$ROOT/capture-store.js" "$ROOT/package.json" "$RESOURCES/Server/"
-cp -R "$ROOT/node_modules" "$RESOURCES/Server/node_modules"
-cp "$ROOT/manifest.json" "$ROOT/injected-script.js" "$ROOT/content-script.js" \
-  "$ROOT/iframe.html" "$ROOT/iframe.js" "$RESOURCES/Extension/"
+cp "$ROOT/native-host/capture-store.js" "$ROOT/native-host/native-host.js" \
+  "$ROOT/native-host/native-host-launcher.sh" "$ROOT/package.json" "$RESOURCES/NativeHost/"
+chmod 755 "$RESOURCES/NativeHost/native-host-launcher.sh"
+cp "$ROOT/extension/manifest.json" "$ROOT/extension/injected-script.js" "$ROOT/extension/content-script.js" \
+  "$ROOT/extension/iframe.html" "$ROOT/extension/iframe.js" "$RESOURCES/Extension/"
 
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

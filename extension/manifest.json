@@ -2,6 +2,7 @@
   "name": "Video Downloadest",
   "manifest_version": 3,
   "version": "0.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3QFAd53oNNIXARs4uDK6DfvSRYWXLqA9LsA8VdC8IVEZ6I8ddfVH2bz9SZuNl/EAs7UNJyQH+Vo0wrBk14/1ozP//PxVcNSeBQehvuzLFjgNoaVcMWevQ9pRqn9KMj3hE96CnOLG4N8+B9D1gMvCnLRxkLwl8wiZIvXz8q/sa4qE5MKVuS3SXDmIA+4bjz5YYDX5CYVThBOVKcvXS4Zeode7GxUYZR1GghvNDwQIfZsoGcxS7ICIfqS81Z9DhWpHhcEQ++t2eGxGw9ysAMjoSCaXvxiFI8Fy0GhPScjzEqMEw3y8+BAMBxVQ2VxhdyJ2luHg1TXzaZXHyhToMNN2jwIDAQAB",
   "content_scripts": [
     {
       "matches": [
@@ -37,10 +38,8 @@
     }
   ],
   "incognito": "split",
-  "host_permissions": [
-    "http://localhost:3000/*"
-  ],
   "permissions": [
-    "storage"
+    "storage",
+    "nativeMessaging"
   ]
 }

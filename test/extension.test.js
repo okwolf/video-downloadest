@@ -3,17 +3,6 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import fs from 'node:fs/promises';
 
-async function connectFrame(code, context, port) {
-  const postMessage = port.postMessage;
-  port.postMessage = value => { if (value?.ready !== true) postMessage(value); };
-  Object.assign(context, { window: {}, parent: {}, location: { search: '?secret=test' }, URLSearchParams,
-    chrome: { storage: { local: { async get(key) { return { [key]: Date.now() + 60000 }; }, async remove() {} } } },
-    navigator: { get serviceWorker() { throw new Error('Uploads must not depend on a service worker'); } }
-  });
-  vm.runInNewContext(code, context);
-  await context.window.onmessage({ source: context.parent, data: 'test', ports: [port] });
-}
-
 import { setupPlayerPage } from './helpers/page.js';
 
 test('progress and playback errors use data-only bridge messages', async () => {
@@ -232,34 +221,6 @@ test('preload memory is bounded and overflow never uploads a partial capture', (
   assert.equal(messages.length, 0);
 });
 
-test('iframe completion waits for uploads and stops after upload failure', async () => {
-  const code = await fs.readFile(new URL('../iframe.js', import.meta.url), 'utf8');
-  const calls = [];
-  let release;
-  const replies = [];
-  const port = { postMessage: value => replies.push(value) };
-  const context = { setTimeout: callback => queueMicrotask(callback), self: {}, fetch: async url => {
-    calls.push(url);
-    if (url.includes('/streams/')) await new Promise(resolve => { release = resolve; });
-    return { ok: true, json: async () => ({ file: 'done.mkv' }) };
-  } };
-  await connectFrame(code, context, port);
-  port.onmessage({ data: { kind: 'chunk', captureId: 'one', streamId: 'v', index: 0, type: 'video/mp4', buffer: new ArrayBuffer(1) } });
-  port.onmessage({ data: { kind: 'complete', captureId: 'one', streams: [{ id: 'v', count: 1 }] } });
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(calls.length, 1);
-  release();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(calls.length, 2);
-  assert.equal(replies[0].file, 'done.mkv');
-  context.fetch = async () => { throw new Error('offline'); };
-  port.onmessage({ data: { kind: 'chunk', captureId: 'two', streamId: 'v', index: 0 } });
-  port.onmessage({ data: { kind: 'complete', captureId: 'two' } });
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(replies.at(-1).error, 'offline');
-  assert.equal(calls.length, 2);
-});
-
 test('isolated bridge ignores forged events and synthetic download clicks', async () => {
   const page = setupPlayerPage();
   const forged = { sessionId: 'forged', captureId: 'capture', bufferId: 'v', bufferIndex: 0, bufferType: 'video/mp4', buffer: new Uint8Array([1]) };
@@ -269,31 +230,6 @@ test('isolated bridge ignores forged events and synthetic download clicks', asyn
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(page.player.playCalls, undefined);
   assert.equal(page.uploaded.length, 0);
-});
-
-test('iframe retries interrupted parts before sending completion', async () => {
-  const code = await fs.readFile(new URL('../iframe.js', import.meta.url), 'utf8');
-  let attempts = 0;
-  const calls = [], replies = [], delays = [];
-  const port = { postMessage: reply => replies.push(reply) };
-  const context = { self: {}, setTimeout(callback, delay) { delays.push(delay); queueMicrotask(callback); },
-    fetch: async (url, options) => {
-      calls.push(url);
-      if (url.includes('/streams/')) {
-        assert.equal(options.body, 'original bytes');
-        if (++attempts < 3) throw new TypeError('Failed to fetch');
-      }
-      return { ok: true, json: async () => ({ file: 'saved.mp4' }) };
-    }
-  };
-  await connectFrame(code, context, port);
-  port.onmessage({ data: { appendBuffer: { captureId: 'retry', bufferId: 'v', bufferIndex: 0, bufferType: 'video/mp4', buffer: 'original bytes' } } });
-  port.onmessage({ data: { bufferEnd: { captureId: 'retry', streams: [{ id: 'v', count: 1 }] } } });
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(attempts, 3);
-  assert.deepEqual(delays, [500, 1000]);
-  assert.match(calls.at(-1), /complete$/);
-  assert.equal(replies[0].file, 'saved.mp4');
 });
 
 test('changing a video source requires a new download choice and releases old cache', async () => {
@@ -418,32 +354,14 @@ test('main-world discovery works when the isolated bridge starts first', () => {
 });
 
 test('manifest installs capture directly in MAIN at document_start', async () => {
-  const manifest = JSON.parse(await fs.readFile(new URL('../manifest.json', import.meta.url)));
+  const manifest = JSON.parse(await fs.readFile(new URL('../extension/manifest.json', import.meta.url)));
   assert.ok(manifest.content_scripts.some(script => script.world === 'MAIN' && script.run_at === 'document_start' && script.js.includes('injected-script.js')));
-  const bridge = await fs.readFile(new URL('../content-script.js', import.meta.url), 'utf8');
+  const bridge = await fs.readFile(new URL('../extension/content-script.js', import.meta.url), 'utf8');
   assert.ok(!bridge.includes('injected-script.js'));
 });
 
-test('completion retries transient failures and permits another attempt after exhaustion', async () => {
-  const code = await fs.readFile(new URL('../iframe.js', import.meta.url), 'utf8');
-  const replies = []; let attempts = 0;
-  const port = { postMessage: reply => replies.push(reply) };
-  const context = { setTimeout: cb => queueMicrotask(cb), fetch: async () => {
-    if (++attempts <= 4) throw new Error('temporary');
-    return { ok: true, json: async () => ({ file: 'saved.mp4' }) };
-  } };
-  await connectFrame(code, context, port);
-  port.onmessage({ data: { kind: 'complete', captureId: 'retry-complete', streams: [] } });
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(attempts, 4);
-  port.onmessage({ data: { kind: 'complete', captureId: 'retry-complete', streams: [] } });
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(attempts, 5);
-  assert.equal(replies.at(-1).file, 'saved.mp4');
-});
-
 test('web-accessible upload frame rejects a page-created connection without a capability', async () => {
-  const code = await fs.readFile(new URL('../iframe.js', import.meta.url), 'utf8');
+  const code = await fs.readFile(new URL('../extension/iframe.js', import.meta.url), 'utf8');
   const port = {};
   const context = { window: {}, parent: {}, location: { search: '?secret=forged' }, URLSearchParams,
     chrome: { storage: { local: { async get() { return {}; }, async remove() { throw new Error('Must not accept'); } } } } };
@@ -475,23 +393,6 @@ test('bridge reports a frame that never acknowledges the connection', async () =
   await new Promise(resolve => setImmediate(resolve));
   assert.match(page.overlayHosts[0].shadow.children.at(-1).textContent, /Upload connection failed/);
   assert.equal(page.uploaded.length, 0);
-});
-
-test('iframe caps queued bytes and refuses to complete a partial capture', async () => {
-  const code = await fs.readFile(new URL('../iframe.js', import.meta.url), 'utf8');
-  const replies = [], calls = [];
-  let release;
-  const port = { postMessage: value => replies.push(value) };
-  const context = { fetch: async url => { calls.push(url); await new Promise(resolve => { release = resolve; }); return { ok: true }; } };
-  await connectFrame(code, context, port);
-  port.onmessage({ data: { kind: 'chunk', captureId: 'bounded', streamId: 'v', index: 0, type: 'video/mp4', buffer: new ArrayBuffer(1) } });
-  await new Promise(resolve => setImmediate(resolve));
-  port.onmessage({ data: { kind: 'chunk', captureId: 'bounded', streamId: 'v', index: 1, type: 'video/mp4', buffer: { byteLength: 129 * 1024 * 1024 } } });
-  port.onmessage({ data: { kind: 'complete', captureId: 'bounded', streams: [{ id: 'v', count: 2 }] } });
-  assert.match(replies[0].error, /queue filled/);
-  release();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(calls.length, 1);
 });
 
 test('source changes retire detached preloads and invalidate old playback gestures', async () => {

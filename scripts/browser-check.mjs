@@ -1,6 +1,6 @@
 // Real DOM and trusted-input checks without third-party automation dependencies.
 // Uses a disposable Chrome profile and simulates manifest MAIN/ISOLATED worlds
-// through CDP; localhost uploads are recorded instead of sent to the user's server.
+// through CDP; the extension frame handshake is simulated without a native host.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -8,7 +8,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { runFFmpeg } from '../capture-store.js';
+import { runFFmpeg } from '../native-host/capture-store.js';
 
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'video-browser-'));
 let chrome, socket, server;
@@ -93,8 +93,8 @@ try {
   await call('Page.enable'); await call('Runtime.enable'); await call('DOM.enable');
   mainFrameId = (await call('Page.getFrameTree')).frameTree.frame.id;
   await call('Emulation.setDeviceMetricsOverride', { width: 1100, height: 1000, deviceScaleFactor: 1, mobile: false });
-  const injected = await fs.readFile(new URL('../injected-script.js', import.meta.url), 'utf8');
-  const bridge = (await fs.readFile(new URL('../content-script.js', import.meta.url), 'utf8')).replace('catch { /* Ignore malformed', 'catch (error) { globalThis.reviewBridgeError=error.stack; /* Ignore malformed');
+  const injected = await fs.readFile(new URL('../extension/injected-script.js', import.meta.url), 'utf8');
+  const bridge = (await fs.readFile(new URL('../extension/content-script.js', import.meta.url), 'utf8')).replace('catch { /* Ignore malformed', 'catch (error) { globalThis.reviewBridgeError=error.stack; /* Ignore malformed');
   await call('Page.addScriptToEvaluateOnNewDocument', { source: injected });
   const stubs = `globalThis.reviewUploads=[];
     globalThis.reviewShadowRoots=new Map();

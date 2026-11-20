@@ -4,18 +4,14 @@ import SwiftUI
 
 @MainActor
 final class CompanionModel: ObservableObject {
-    @Published var serverState = "Starting local server…"
-    @Published var serverIsRunning = false
-    @Published var detail = "The server accepts connections only from this Mac."
+    @Published var hostState = "Preparing Native Messaging host…"
+    @Published var hostIsReady = false
+    @Published var detail = "Preparing the local capture host for Chrome."
     @Published var startupFailed = false
     @Published var isPreparing = false
     @Published var downloadLabel: String?
     @Published var downloadProgress: Double?
 
-    private var process: Process?
-    private var healthTimer: Timer?
-    private var logHandle: FileHandle?
-    private var stoppingIntentionally = false
     private var launchNote: String?
     private var nodeVersion = ""
     private var ffmpegVersion = ""
@@ -68,21 +64,20 @@ final class CompanionModel: ObservableObject {
                 extensionDirectory = bundledExtension
             }
         } else {
-            extensionDirectory = developmentRoot
+            extensionDirectory = developmentRoot.appendingPathComponent("extension", isDirectory: true)
         }
         let logDirectory = home.appendingPathComponent("Library/Logs/Video Downloadest", isDirectory: true)
         try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
-        logURL = logDirectory.appendingPathComponent("server.log")
-        startServer()
+        logURL = logDirectory.appendingPathComponent("native-host.log")
+        prepareHost()
     }
 
-    func startServer() {
-        guard process == nil, !isPreparing else { return }
+    func prepareHost() {
+        guard !isPreparing else { return }
         startupFailed = false
-        stoppingIntentionally = false
         isPreparing = true
-        serverIsRunning = false
-        serverState = "Checking for the latest Node.js LTS…"
+        hostIsReady = false
+        hostState = "Checking for the latest Node.js LTS…"
         detail = "Connecting to the official Node.js release service."
         Task { await prepareRuntimeAndStartServer() }
     }
@@ -91,7 +86,7 @@ final class CompanionModel: ObservableObject {
         do {
             let node: URL
             do {
-                serverState = "Checking for the latest Node.js LTS…"
+                hostState = "Checking for the latest Node.js LTS…"
                 let release = try await latestLTSRelease()
                 if let cached = cachedNode(version: release.version) {
                     node = cached.url
@@ -109,7 +104,7 @@ final class CompanionModel: ObservableObject {
 
             let ffmpeg: URL
             do {
-                serverState = "Checking for the latest FFmpeg release…"
+                hostState = "Checking for the latest FFmpeg release…"
                 let release = try await latestFFmpegRelease()
                 defer {
                     if let prefetchedArchive = release.prefetchedArchive {
@@ -130,13 +125,13 @@ final class CompanionModel: ObservableObject {
                 let note = "Could not check for an FFmpeg update. Using cached \(cached.version)."
                 launchNote = [launchNote, note].compactMap { $0 }.joined(separator: " ")
             }
-            launchServer(using: node, ffmpeg: ffmpeg)
+            launchNativeHost(using: node, ffmpeg: ffmpeg)
         } catch {
             appendLog("Runtime setup failed: \(error.localizedDescription)")
             isPreparing = false
             startupFailed = true
-            serverState = "Could not prepare Node.js or FFmpeg"
-            detail = "\(error.localizedDescription)\n\nCheck your internet connection, then choose Start server to retry. Open the logs for details."
+            hostState = "Could not prepare Node.js or FFmpeg"
+            detail = "\(error.localizedDescription)\n\nCheck your internet connection, then choose Prepare host to retry. Open the host logs for details."
         }
     }
 
@@ -226,7 +221,7 @@ final class CompanionModel: ObservableObject {
     }
 
     private func downloadNode(_ release: (version: String, archiveName: String)) async throws -> URL {
-        serverState = "Downloading Node.js \(release.version) LTS…"
+        hostState = "Downloading Node.js \(release.version) LTS…"
         detail = "Downloading the official Apple Silicon runtime and checking its SHA-256 checksum. This may take a minute."
         try FileManager.default.createDirectory(at: runtimeDirectory, withIntermediateDirectories: true)
         let archiveURL = URL(string: "https://nodejs.org/dist/\(release.version)/\(release.archiveName)")!
@@ -256,7 +251,7 @@ final class CompanionModel: ObservableObject {
             throw CompanionError.download("Node.js archive checksum verification failed.")
         }
 
-        serverState = "Installing Node.js \(release.version)…"
+        hostState = "Installing Node.js \(release.version)…"
         let staging = runtimeDirectory.appendingPathComponent(".install-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         do {
@@ -290,7 +285,7 @@ final class CompanionModel: ObservableObject {
     }
 
     private func downloadFFmpeg(_ release: FFmpegRelease) async throws -> URL {
-        serverState = "Downloading FFmpeg \(release.version)…"
+        hostState = "Downloading FFmpeg \(release.version)…"
         detail = "Downloading the latest stable Apple Silicon build and checking its SHA-256 checksum."
         try FileManager.default.createDirectory(at: ffmpegRuntimeDirectory, withIntermediateDirectories: true)
 
@@ -327,7 +322,7 @@ final class CompanionModel: ObservableObject {
             throw CompanionError.download("FFmpeg archive checksum verification failed.")
         }
 
-        serverState = "Installing FFmpeg \(release.version)…"
+        hostState = "Installing FFmpeg \(release.version)…"
         let (listStatus, listData, listError) = try runCommand("/usr/bin/unzip", ["-Z1", storedArchive.path])
         guard listStatus == 0 else {
             throw CompanionError.download("Could not inspect the FFmpeg archive. \(String(decoding: listError, as: UTF8.self))")
@@ -431,101 +426,55 @@ final class CompanionModel: ObservableObject {
                 errors.fileHandleForReading.readDataToEndOfFile())
     }
 
-    private func launchServer(using node: URL, ffmpeg: URL) {
+    private func launchNativeHost(using node: URL, ffmpeg: URL) {
         let resources = Bundle.main.resourceURL
-        let bundledServer = resources?.appendingPathComponent("Server/server.js")
         let developmentRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let serverRoot = (bundledServer.map { FileManager.default.fileExists(atPath: $0.path) } == true)
-            ? resources!.appendingPathComponent("Server", isDirectory: true)
-            : developmentRoot
-        let serverScript = serverRoot.appendingPathComponent("server.js")
-
-        let task = Process()
-        task.executableURL = node
-        task.arguments = [serverScript.path]
-        task.currentDirectoryURL = serverRoot
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
-        environment["VIDEO_DOWNLOADEST_DATA_DIR"] = dataDirectory.path
-        environment["FFMPEG_PATH"] = ffmpeg.path
-        task.environment = environment
-        if !FileManager.default.fileExists(atPath: logURL.path) {
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        }
-        if let handle = try? FileHandle(forWritingTo: logURL) {
-            handle.seekToEndOfFile()
-            task.standardOutput = handle
-            task.standardError = handle
-            logHandle = handle
-        }
-        task.terminationHandler = { [weak self] terminatedTask in
-            Task { @MainActor in
-                guard let self else { return }
-                let failed = !self.stoppingIntentionally
-                self.logHandle?.synchronizeFile()
-                try? self.logHandle?.close()
-                self.logHandle = nil
-                self.process = nil
-                self.serverIsRunning = false
-                self.isPreparing = false
-                self.healthTimer?.invalidate()
-                self.healthTimer = nil
-                if failed {
-                    let logText = (try? String(contentsOf: self.logURL, encoding: .utf8)) ?? ""
-                    let lastLines = logText.split(separator: "\n").suffix(6).joined(separator: "\n")
-                    self.startupFailed = true
-                    if logText.localizedCaseInsensitiveContains("EADDRINUSE") {
-                        self.serverState = "Port 3000 is already in use"
-                        self.detail = "Another server is using port 3000. Quit it, then choose Start server again.\n\n\(lastLines)"
-                    } else {
-                        self.serverState = "The server stopped unexpectedly (exit \(terminatedTask.terminationStatus))"
-                        self.detail = lastLines.isEmpty
-                            ? "Open the server logs for details, then choose Start server to retry."
-                            : "\(lastLines)\n\nOpen the server logs for more detail, then choose Start server to retry."
-                    }
-                } else {
-                    self.serverState = "Server stopped"
-                    self.detail = "Choose Start server when you are ready to capture again."
-                }
-            }
+        let bundledLauncher = resources?.appendingPathComponent("NativeHost/native-host-launcher.sh")
+        let launcher = (bundledLauncher.map { FileManager.default.fileExists(atPath: $0.path) } == true)
+            ? bundledLauncher! : developmentRoot.appendingPathComponent("native-host/native-host-launcher.sh")
+        let nativeHostScript = resources?.appendingPathComponent("NativeHost/native-host.js")
+            ?? developmentRoot.appendingPathComponent("native-host/native-host.js")
+        guard FileManager.default.isExecutableFile(atPath: node.path),
+              FileManager.default.isExecutableFile(atPath: ffmpeg.path),
+              FileManager.default.fileExists(atPath: launcher.path),
+              FileManager.default.fileExists(atPath: nativeHostScript.path) else {
+            isPreparing = false
+            startupFailed = true
+            hostState = "Native Messaging host could not be installed"
+            detail = "The host launcher or a managed runtime is missing. Choose Prepare host to retry, then open the host logs for details."
+            appendLog("Native host resources were missing at \(launcher.path).")
+            return
         }
         do {
-            try task.run()
-            process = task
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcher.path)
+            let hostDirectory = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/Google/Chrome/NativeMessagingHosts", isDirectory: true)
+            try FileManager.default.createDirectory(at: hostDirectory, withIntermediateDirectories: true)
+            let manifest: [String: Any] = [
+                "name": "com.videodownloadest.host",
+                "description": "Video Downloadest capture host",
+                "path": launcher.path,
+                "type": "stdio",
+                "allowed_origins": ["chrome-extension://nifpakplfpdbabogkojdegnnkkpkckpd/"]
+            ]
+            let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
+            let manifestURL = hostDirectory.appendingPathComponent("com.videodownloadest.host.json")
+            try manifestData.write(to: manifestURL, options: .atomic)
             isPreparing = false
-            serverState = "Starting local server…"
-            detail = "Saving captures to \(capturesDirectory.path)"
-            healthTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.checkHealth() }
-            }
-            checkHealth()
+            hostIsReady = true
+            startupFailed = false
+            hostState = "Native Messaging host is ready"
+            let note = launchNote.map { $0 + " " } ?? ""
+            detail = "\(note)Chrome will launch the host when the extension connects. If you installed an earlier extension copy, remove it and load this updated copy from the folder below. Captures are saved to \(capturesDirectory.path). Node.js \(nodeVersion) and FFmpeg \(ffmpegVersion) are managed by this app."
+            appendLog("Registered Chrome Native Messaging host at \(manifestURL.path); script: \(nativeHostScript.path).")
         } catch {
             isPreparing = false
             startupFailed = true
-            serverState = "Server could not start"
-            detail = "\(error.localizedDescription)\n\nOpen the server logs for details, then choose Start server to retry."
-            appendLog("Capture server failed to launch: \(error.localizedDescription)")
+            hostIsReady = false
+            hostState = "Native Messaging host could not be installed"
+            detail = "\(error.localizedDescription)\n\nOpen the host logs for details, then choose Prepare host to retry."
+            appendLog("Native host registration failed: \(error.localizedDescription)")
         }
-    }
-
-    func checkHealth() {
-        guard process?.isRunning == true, !serverIsRunning else { return }
-        guard let url = URL(string: "http://127.0.0.1:3000/health") else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let data, (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["ok"] as? Bool == true else { return }
-            Task { @MainActor in
-                guard self?.process?.isRunning == true else { return }
-                let note = self?.launchNote ?? ""
-                let nodeVersion = self?.nodeVersion ?? ""
-                self?.serverIsRunning = true
-                self?.startupFailed = false
-                self?.serverState = "Server is running"
-                let ffmpegVersion = self?.ffmpegVersion ?? ""
-                self?.detail = "\(note.isEmpty ? "" : note + " ")Keep this app open while capturing. Videos are saved in your Videos folder. Node.js \(nodeVersion) and FFmpeg \(ffmpegVersion) are managed by this app."
-                self?.healthTimer?.invalidate()
-                self?.healthTimer = nil
-            }
-        }.resume()
     }
 
     func openExtensionsPage() {
@@ -569,11 +518,7 @@ final class CompanionModel: ObservableObject {
     }
 
     func quit() {
-        stoppingIntentionally = true
-        healthTimer?.invalidate()
-        process?.terminate()
-        process = nil
-        try? logHandle?.close()
+        // Chrome owns the Native Messaging host process lifetime.
     }
 }
 
@@ -648,12 +593,12 @@ struct CompanionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(spacing: 14) {
-                Image(systemName: model.startupFailed ? "exclamationmark.triangle.fill" : (model.serverIsRunning ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath"))
+                Image(systemName: model.startupFailed ? "exclamationmark.triangle.fill" : (model.hostIsReady ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath"))
                     .font(.system(size: 30))
-                    .foregroundStyle(model.startupFailed ? .red : (model.serverIsRunning ? .green : .orange))
+                    .foregroundStyle(model.startupFailed ? .red : (model.hostIsReady ? .green : .orange))
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Video Downloadest").font(.title2.bold())
-                    Text(model.serverState).font(.headline)
+                    Text(model.hostState).font(.headline)
                 }
                 Spacer()
             }
@@ -701,18 +646,18 @@ struct CompanionView: View {
                 Spacer()
                 Button("Open folder") { model.openCapturesFolder() }
             }
-            Text("Node.js and FFmpeg are downloaded and updated by this app.")
+            Text("The Native Messaging host uses managed Node.js and FFmpeg runtimes.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button("Open server logs") { model.openLogs() }
-                if model.startupFailed || (!model.serverIsRunning && !model.isPreparing) {
-                    Button("Start server") { model.startServer() }
+                Button("Open host logs") { model.openLogs() }
+                if model.startupFailed || (!model.hostIsReady && !model.isPreparing) {
+                    Button("Prepare host") { model.prepareHost() }
                 }
             }
             if model.isPreparing {
                 ProgressView().controlSize(.small)
             }
-            if !model.serverIsRunning && !model.isPreparing {
+            if !model.hostIsReady && !model.isPreparing {
                 Text("An internet connection is needed to download or update the runtimes.")
                     .font(.caption).foregroundStyle(.secondary)
             }
