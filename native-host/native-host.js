@@ -9,14 +9,15 @@ import { createCaptureStore } from './capture-store.js';
 const maxMessageBytes = 64 * 1024 * 1024;
 const dataDirectory = path.resolve(process.env.VIDEO_DOWNLOADEST_DATA_DIR || '.');
 const logPath = process.env.VIDEO_DOWNLOADEST_LOG_PATH;
+let log = process.stderr;
 if (logPath) {
   await fs.mkdir(path.dirname(logPath), { recursive: true });
-  const log = createWriteStream(logPath, { flags: 'a' });
-  const writeLog = (...values) => log.write(`${new Date().toISOString()} ${values.map(value => value instanceof Error ? value.stack || value.message : String(value)).join(' ')}${os.EOL}`);
-  console.log = writeLog;
-  console.warn = writeLog;
-  console.error = writeLog;
+  log = createWriteStream(logPath, { flags: 'a' });
 }
+const writeLog = (...values) => log.write(`${new Date().toISOString()} ${values.map(value => value instanceof Error ? value.stack || value.message : String(value)).join(' ')}${os.EOL}`);
+console.log = writeLog;
+console.warn = writeLog;
+console.error = writeLog;
 
 const store = createCaptureStore(dataDirectory);
 const incoming = new Map();
